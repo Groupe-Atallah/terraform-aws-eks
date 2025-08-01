@@ -273,6 +273,7 @@ variable "metadata_options" {
   }
 }
 
+# TODO - make this false by default at next breaking change
 variable "enable_monitoring" {
   description = "Enables/disables detailed monitoring"
   type        = bool
@@ -465,6 +466,14 @@ variable "update_config" {
   default = {
     max_unavailable_percentage = 33
   }
+}
+
+variable "node_repair_config" {
+  description = "The node auto repair configuration for the node group"
+  type = object({
+    enabled = optional(bool, true)
+  })
+  default = null
 }
 
 variable "timeouts" {

@@ -16,6 +16,8 @@ locals {
     AL2_ARM_64                 = "linux"
     BOTTLEROCKET_ARM_64        = "bottlerocket"
     BOTTLEROCKET_x86_64        = "bottlerocket"
+    BOTTLEROCKET_ARM_64_FIPS   = "bottlerocket"
+    BOTTLEROCKET_x86_64_FIPS   = "bottlerocket"
     BOTTLEROCKET_ARM_64_NVIDIA = "bottlerocket"
     BOTTLEROCKET_x86_64_NVIDIA = "bottlerocket"
     WINDOWS_CORE_2019_x86_64   = "windows"
@@ -26,6 +28,7 @@ locals {
     AL2023_ARM_64_STANDARD     = "al2023"
     AL2023_x86_64_NEURON       = "al2023"
     AL2023_x86_64_NVIDIA       = "al2023"
+    AL2023_ARM_64_NVIDIA       = "al2023"
   }
 
   user_data_type = local.ami_type_to_user_data_type[var.ami_type]
@@ -37,6 +40,8 @@ locals {
     AL2_ARM_64                 = "/aws/service/eks/optimized-ami/${local.ssm_cluster_version}/amazon-linux-2-arm64/recommended/image_id"
     BOTTLEROCKET_ARM_64        = "/aws/service/bottlerocket/aws-k8s-${local.ssm_cluster_version}/arm64/latest/image_id"
     BOTTLEROCKET_x86_64        = "/aws/service/bottlerocket/aws-k8s-${local.ssm_cluster_version}/x86_64/latest/image_id"
+    BOTTLEROCKET_ARM_64_FIPS   = "/aws/service/bottlerocket/aws-k8s-${local.ssm_cluster_version}-fips/arm64/latest/image_id"
+    BOTTLEROCKET_x86_64_FIPS   = "/aws/service/bottlerocket/aws-k8s-${local.ssm_cluster_version}-fips/x86_64/latest/image_id"
     BOTTLEROCKET_ARM_64_NVIDIA = "/aws/service/bottlerocket/aws-k8s-${local.ssm_cluster_version}-nvidia/arm64/latest/image_id"
     BOTTLEROCKET_x86_64_NVIDIA = "/aws/service/bottlerocket/aws-k8s-${local.ssm_cluster_version}-nvidia/x86_64/latest/image_id"
     WINDOWS_CORE_2019_x86_64   = "/aws/service/ami-windows-latest/Windows_Server-2019-English-Full-EKS_Optimized-${local.ssm_cluster_version}/image_id"
@@ -47,6 +52,7 @@ locals {
     AL2023_ARM_64_STANDARD     = "/aws/service/eks/optimized-ami/${local.ssm_cluster_version}/amazon-linux-2023/arm64/standard/recommended/image_id"
     AL2023_x86_64_NEURON       = "/aws/service/eks/optimized-ami/${local.ssm_cluster_version}/amazon-linux-2023/x86_64/neuron/recommended/image_id"
     AL2023_x86_64_NVIDIA       = "/aws/service/eks/optimized-ami/${local.ssm_cluster_version}/amazon-linux-2023/x86_64/nvidia/recommended/image_id"
+    AL2023_ARM_64_NVIDIA       = "/aws/service/eks/optimized-ami/${local.ssm_cluster_version}/amazon-linux-2023/arm64/nvidia/recommended/image_id"
   }
 }
 

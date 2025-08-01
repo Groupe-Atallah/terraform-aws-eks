@@ -3,11 +3,18 @@ provider "aws" {
 }
 
 data "aws_caller_identity" "current" {}
-data "aws_availability_zones" "available" {}
+
+data "aws_availability_zones" "available" {
+  # Exclude local zones
+  filter {
+    name   = "opt-in-status"
+    values = ["opt-in-not-required"]
+  }
+}
 
 locals {
   name            = "ex-${replace(basename(path.cwd), "_", "-")}"
-  cluster_version = "1.31"
+  cluster_version = "1.33"
   region          = "eu-west-1"
 
   vpc_cidr = "10.0.0.0/16"

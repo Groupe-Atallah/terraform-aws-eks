@@ -323,11 +323,11 @@ module "eks_managed_node_group" {
   force_update_version = try(each.value.force_update_version, var.eks_managed_node_group_defaults.force_update_version, null)
   instance_types       = try(each.value.instance_types, var.eks_managed_node_group_defaults.instance_types, null)
   labels               = try(each.value.labels, var.eks_managed_node_group_defaults.labels, null)
-
-  remote_access = try(each.value.remote_access, var.eks_managed_node_group_defaults.remote_access, {})
-  taints        = try(each.value.taints, var.eks_managed_node_group_defaults.taints, {})
-  update_config = try(each.value.update_config, var.eks_managed_node_group_defaults.update_config, local.default_update_config)
-  timeouts      = try(each.value.timeouts, var.eks_managed_node_group_defaults.timeouts, {})
+  node_repair_config   = try(each.value.node_repair_config, var.eks_managed_node_group_defaults.node_repair_config, null)
+  remote_access        = try(each.value.remote_access, var.eks_managed_node_group_defaults.remote_access, {})
+  taints               = try(each.value.taints, var.eks_managed_node_group_defaults.taints, {})
+  update_config        = try(each.value.update_config, var.eks_managed_node_group_defaults.update_config, local.default_update_config)
+  timeouts             = try(each.value.timeouts, var.eks_managed_node_group_defaults.timeouts, {})
 
   # User data
   platform                   = try(each.value.platform, var.eks_managed_node_group_defaults.platform, "linux")
@@ -479,17 +479,18 @@ module "self_managed_node_group" {
   # User data
   platform = try(each.value.platform, var.self_managed_node_group_defaults.platform, null)
   # TODO - update this when `var.platform` is removed in v21.0
-  ami_type                 = try(each.value.ami_type, var.self_managed_node_group_defaults.ami_type, "AL2_x86_64")
-  cluster_endpoint         = try(time_sleep.this[0].triggers["cluster_endpoint"], "")
-  cluster_auth_base64      = try(time_sleep.this[0].triggers["cluster_certificate_authority_data"], "")
-  cluster_service_cidr     = try(time_sleep.this[0].triggers["cluster_service_cidr"], "")
-  cluster_ip_family        = var.cluster_ip_family
-  pre_bootstrap_user_data  = try(each.value.pre_bootstrap_user_data, var.self_managed_node_group_defaults.pre_bootstrap_user_data, "")
-  post_bootstrap_user_data = try(each.value.post_bootstrap_user_data, var.self_managed_node_group_defaults.post_bootstrap_user_data, "")
-  bootstrap_extra_args     = try(each.value.bootstrap_extra_args, var.self_managed_node_group_defaults.bootstrap_extra_args, "")
-  user_data_template_path  = try(each.value.user_data_template_path, var.self_managed_node_group_defaults.user_data_template_path, "")
-  cloudinit_pre_nodeadm    = try(each.value.cloudinit_pre_nodeadm, var.self_managed_node_group_defaults.cloudinit_pre_nodeadm, [])
-  cloudinit_post_nodeadm   = try(each.value.cloudinit_post_nodeadm, var.self_managed_node_group_defaults.cloudinit_post_nodeadm, [])
+  ami_type                   = try(each.value.ami_type, var.self_managed_node_group_defaults.ami_type, "AL2_x86_64")
+  cluster_endpoint           = try(time_sleep.this[0].triggers["cluster_endpoint"], "")
+  cluster_auth_base64        = try(time_sleep.this[0].triggers["cluster_certificate_authority_data"], "")
+  cluster_service_cidr       = try(time_sleep.this[0].triggers["cluster_service_cidr"], "")
+  additional_cluster_dns_ips = try(each.value.additional_cluster_dns_ips, var.self_managed_node_group_defaults.additional_cluster_dns_ips, [])
+  cluster_ip_family          = var.cluster_ip_family
+  pre_bootstrap_user_data    = try(each.value.pre_bootstrap_user_data, var.self_managed_node_group_defaults.pre_bootstrap_user_data, "")
+  post_bootstrap_user_data   = try(each.value.post_bootstrap_user_data, var.self_managed_node_group_defaults.post_bootstrap_user_data, "")
+  bootstrap_extra_args       = try(each.value.bootstrap_extra_args, var.self_managed_node_group_defaults.bootstrap_extra_args, "")
+  user_data_template_path    = try(each.value.user_data_template_path, var.self_managed_node_group_defaults.user_data_template_path, "")
+  cloudinit_pre_nodeadm      = try(each.value.cloudinit_pre_nodeadm, var.self_managed_node_group_defaults.cloudinit_pre_nodeadm, [])
+  cloudinit_post_nodeadm     = try(each.value.cloudinit_post_nodeadm, var.self_managed_node_group_defaults.cloudinit_post_nodeadm, [])
 
   # Launch Template
   create_launch_template                 = try(each.value.create_launch_template, var.self_managed_node_group_defaults.create_launch_template, true)
