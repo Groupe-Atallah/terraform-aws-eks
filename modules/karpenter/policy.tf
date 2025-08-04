@@ -361,6 +361,7 @@ data "aws_iam_policy_document" "v1" {
       "arn:${local.partition}:ec2:${local.region}::snapshot/*",
       "arn:${local.partition}:ec2:${local.region}:*:security-group/*",
       "arn:${local.partition}:ec2:${local.region}:*:subnet/*",
+      "arn:${local.partition}:ec2:${local.region}:*:capacity-reservation/*",
     ]
 
     actions = [
@@ -584,7 +585,7 @@ data "aws_iam_policy_document" "v1" {
     condition {
       test     = "StringEquals"
       variable = "iam:PassedToService"
-      values   = ["ec2.${local.dns_suffix}"]
+      values   = distinct(["ec2.${local.dns_suffix}", "ec2.amazonaws.com"])
     }
   }
 

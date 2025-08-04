@@ -1,23 +1,31 @@
-data "aws_partition" "current" {}
-data "aws_caller_identity" "current" {}
+data "aws_partition" "current" {
+  count = local.create ? 1 : 0
+}
+data "aws_caller_identity" "current" {
+  count = local.create ? 1 : 0
+}
 
 data "aws_iam_session_context" "current" {
+  count = local.create ? 1 : 0
+
   # This data source provides information on the IAM source role of an STS assumed role
   # For non-role ARNs, this data source simply passes the ARN through issuer ARN
   # Ref https://github.com/terraform-aws-modules/terraform-aws-eks/issues/2327#issuecomment-1355581682
   # Ref https://github.com/hashicorp/terraform-provider-aws/issues/28381
-  arn = data.aws_caller_identity.current.arn
+  arn = try(data.aws_caller_identity.current[0].arn, "")
 }
 
 locals {
   create = var.create && var.putin_khuylo
 
-  partition = data.aws_partition.current.partition
+  partition = try(data.aws_partition.current[0].partition, "")
 
   cluster_role = try(aws_iam_role.this[0].arn, var.iam_role_arn)
 
   create_outposts_local_cluster    = length(var.outpost_config) > 0
   enable_cluster_encryption_config = length(var.cluster_encryption_config) > 0 && !local.create_outposts_local_cluster
+
+  auto_mode_enabled = try(var.cluster_compute_config.enabled, false)
 }
 
 ################################################################################
@@ -31,7 +39,8 @@ resource "aws_eks_cluster" "this" {
   role_arn                      = local.cluster_role
   version                       = var.cluster_version
   enabled_cluster_log_types     = var.cluster_enabled_log_types
-  bootstrap_self_managed_addons = var.bootstrap_self_managed_addons
+  bootstrap_self_managed_addons = local.auto_mode_enabled ? coalesce(var.bootstrap_self_managed_addons, false) : var.bootstrap_self_managed_addons
+  force_update_version          = var.cluster_force_update_version
 
   access_config {
     authentication_mode = var.authentication_mode
@@ -42,6 +51,16 @@ resource "aws_eks_cluster" "this" {
     # enabled or disabled at any time of their choosing using the variable
     # var.enable_cluster_creator_admin_permissions
     bootstrap_cluster_creator_admin_permissions = false
+  }
+
+  dynamic "compute_config" {
+    for_each = length(var.cluster_compute_config) > 0 ? [var.cluster_compute_config] : []
+
+    content {
+      enabled       = local.auto_mode_enabled
+      node_pools    = local.auto_mode_enabled ? try(compute_config.value.node_pools, []) : null
+      node_role_arn = local.auto_mode_enabled && length(try(compute_config.value.node_pools, [])) > 0 ? try(compute_config.value.node_role_arn, aws_iam_role.eks_auto[0].arn, null) : null
+    }
   }
 
   vpc_config {
@@ -57,6 +76,14 @@ resource "aws_eks_cluster" "this" {
     for_each = local.create_outposts_local_cluster ? [] : [1]
 
     content {
+      dynamic "elastic_load_balancing" {
+        for_each = local.auto_mode_enabled ? [1] : []
+
+        content {
+          enabled = local.auto_mode_enabled
+        }
+      }
+
       ip_family         = var.cluster_ip_family
       service_ipv4_cidr = var.cluster_service_ipv4_cidr
       service_ipv6_cidr = var.cluster_service_ipv6_cidr
@@ -81,6 +108,39 @@ resource "aws_eks_cluster" "this" {
         key_arn = var.create_kms_key ? module.kms.key_arn : encryption_config.value.provider_key_arn
       }
       resources = encryption_config.value.resources
+    }
+  }
+
+  dynamic "remote_network_config" {
+    # Not valid on Outposts
+    for_each = length(var.cluster_remote_network_config) > 0 && !local.create_outposts_local_cluster ? [var.cluster_remote_network_config] : []
+
+    content {
+      dynamic "remote_node_networks" {
+        for_each = [remote_network_config.value.remote_node_networks]
+
+        content {
+          cidrs = remote_node_networks.value.cidrs
+        }
+      }
+
+      dynamic "remote_pod_networks" {
+        for_each = try([remote_network_config.value.remote_pod_networks], [])
+
+        content {
+          cidrs = remote_pod_networks.value.cidrs
+        }
+      }
+    }
+  }
+
+  dynamic "storage_config" {
+    for_each = local.auto_mode_enabled ? [1] : []
+
+    content {
+      block_storage {
+        enabled = local.auto_mode_enabled
+      }
     }
   }
 
@@ -164,7 +224,7 @@ locals {
   # better controlled by users through Terraform
   bootstrap_cluster_creator_admin_permissions = {
     cluster_creator = {
-      principal_arn = data.aws_iam_session_context.current.issuer_arn
+      principal_arn = try(data.aws_iam_session_context.current[0].issuer_arn, "")
       type          = "STANDARD"
 
       policy_associations = {
@@ -199,7 +259,7 @@ locals {
           association_policy_arn              = pol_val.policy_arn
           association_access_scope_type       = pol_val.access_scope.type
           association_access_scope_namespaces = lookup(pol_val.access_scope, "namespaces", [])
-        } : k => v if !contains(["EC2_LINUX", "EC2_WINDOWS", "FARGATE_LINUX"], lookup(entry_val, "type", "STANDARD")) },
+        } : k => v if !contains(["EC2_LINUX", "EC2_WINDOWS", "FARGATE_LINUX", "HYBRID_LINUX"], lookup(entry_val, "type", "STANDARD")) },
       )
     ]
   ])
@@ -253,7 +313,7 @@ module "kms" {
   # Policy
   enable_default_policy     = var.kms_key_enable_default_policy
   key_owners                = var.kms_key_owners
-  key_administrators        = coalescelist(var.kms_key_administrators, [data.aws_iam_session_context.current.issuer_arn])
+  key_administrators        = coalescelist(var.kms_key_administrators, [try(data.aws_iam_session_context.current[0].issuer_arn, "")])
   key_users                 = concat([local.cluster_role], var.kms_key_users)
   key_service_users         = var.kms_key_service_users
   source_policy_documents   = var.kms_key_source_policy_documents
@@ -380,14 +440,41 @@ locals {
   iam_role_policy_prefix = "arn:${local.partition}:iam::aws:policy"
 
   cluster_encryption_policy_name = coalesce(var.cluster_encryption_policy_name, "${local.iam_role_name}-ClusterEncryption")
+
+  # Standard EKS cluster
+  eks_standard_iam_role_policies = { for k, v in {
+    AmazonEKSClusterPolicy = "${local.iam_role_policy_prefix}/AmazonEKSClusterPolicy",
+  } : k => v if !local.create_outposts_local_cluster && !local.auto_mode_enabled }
+
+  # EKS cluster with EKS auto mode enabled
+  eks_auto_mode_iam_role_policies = { for k, v in {
+    AmazonEKSClusterPolicy       = "${local.iam_role_policy_prefix}/AmazonEKSClusterPolicy"
+    AmazonEKSComputePolicy       = "${local.iam_role_policy_prefix}/AmazonEKSComputePolicy"
+    AmazonEKSBlockStoragePolicy  = "${local.iam_role_policy_prefix}/AmazonEKSBlockStoragePolicy"
+    AmazonEKSLoadBalancingPolicy = "${local.iam_role_policy_prefix}/AmazonEKSLoadBalancingPolicy"
+    AmazonEKSNetworkingPolicy    = "${local.iam_role_policy_prefix}/AmazonEKSNetworkingPolicy"
+  } : k => v if !local.create_outposts_local_cluster && local.auto_mode_enabled }
+
+  # EKS local cluster on Outposts
+  eks_outpost_iam_role_policies = { for k, v in {
+    AmazonEKSClusterPolicy = "${local.iam_role_policy_prefix}/AmazonEKSLocalOutpostClusterPolicy"
+  } : k => v if local.create_outposts_local_cluster && !local.auto_mode_enabled }
+
+  # Security groups for pods
+  eks_sgpp_iam_role_policies = { for k, v in {
+    AmazonEKSVPCResourceController = "${local.iam_role_policy_prefix}/AmazonEKSVPCResourceController"
+  } : k => v if var.enable_security_groups_for_pods && !local.create_outposts_local_cluster && !local.auto_mode_enabled }
 }
 
 data "aws_iam_policy_document" "assume_role_policy" {
   count = local.create && var.create_iam_role ? 1 : 0
 
   statement {
-    sid     = "EKSClusterAssumeRole"
-    actions = ["sts:AssumeRole"]
+    sid = "EKSClusterAssumeRole"
+    actions = [
+      "sts:AssumeRole",
+      "sts:TagSession",
+    ]
 
     principals {
       type        = "Service"
@@ -398,10 +485,8 @@ data "aws_iam_policy_document" "assume_role_policy" {
       for_each = local.create_outposts_local_cluster ? [1] : []
 
       content {
-        type = "Service"
-        identifiers = [
-          "ec2.amazonaws.com",
-        ]
+        type        = "Service"
+        identifiers = ["ec2.amazonaws.com"]
       }
     }
   }
@@ -424,10 +509,12 @@ resource "aws_iam_role" "this" {
 
 # Policies attached ref https://docs.aws.amazon.com/eks/latest/userguide/service_IAM_role.html
 resource "aws_iam_role_policy_attachment" "this" {
-  for_each = { for k, v in {
-    AmazonEKSClusterPolicy         = local.create_outposts_local_cluster ? "${local.iam_role_policy_prefix}/AmazonEKSLocalOutpostClusterPolicy" : "${local.iam_role_policy_prefix}/AmazonEKSClusterPolicy",
-    AmazonEKSVPCResourceController = "${local.iam_role_policy_prefix}/AmazonEKSVPCResourceController",
-  } : k => v if local.create_iam_role }
+  for_each = { for k, v in merge(
+    local.eks_standard_iam_role_policies,
+    local.eks_auto_mode_iam_role_policies,
+    local.eks_outpost_iam_role_policies,
+    local.eks_sgpp_iam_role_policies,
+  ) : k => v if local.create_iam_role }
 
   policy_arn = each.value
   role       = aws_iam_role.this[0].name
@@ -475,6 +562,160 @@ resource "aws_iam_policy" "cluster_encryption" {
   })
 
   tags = merge(var.tags, var.cluster_encryption_policy_tags)
+}
+
+data "aws_iam_policy_document" "custom" {
+  count = local.create_iam_role && var.enable_auto_mode_custom_tags ? 1 : 0
+
+  dynamic "statement" {
+    for_each = var.enable_auto_mode_custom_tags ? [1] : []
+
+    content {
+      sid = "Compute"
+      actions = [
+        "ec2:CreateFleet",
+        "ec2:RunInstances",
+        "ec2:CreateLaunchTemplate",
+      ]
+      resources = ["*"]
+
+      condition {
+        test     = "StringEquals"
+        variable = "aws:RequestTag/eks:eks-cluster-name"
+        values   = ["$${aws:PrincipalTag/eks:eks-cluster-name}"]
+      }
+
+      condition {
+        test     = "StringLike"
+        variable = "aws:RequestTag/eks:kubernetes-node-class-name"
+        values   = ["*"]
+      }
+
+      condition {
+        test     = "StringLike"
+        variable = "aws:RequestTag/eks:kubernetes-node-pool-name"
+        values   = ["*"]
+      }
+    }
+  }
+
+  dynamic "statement" {
+    for_each = var.enable_auto_mode_custom_tags ? [1] : []
+
+    content {
+      sid = "Storage"
+      actions = [
+        "ec2:CreateVolume",
+        "ec2:CreateSnapshot",
+      ]
+      resources = [
+        "arn:${local.partition}:ec2:*:*:volume/*",
+        "arn:${local.partition}:ec2:*:*:snapshot/*",
+      ]
+
+      condition {
+        test     = "StringEquals"
+        variable = "aws:RequestTag/eks:eks-cluster-name"
+        values   = ["$${aws:PrincipalTag/eks:eks-cluster-name}"]
+      }
+    }
+  }
+
+  dynamic "statement" {
+    for_each = var.enable_auto_mode_custom_tags ? [1] : []
+
+    content {
+      sid       = "Networking"
+      actions   = ["ec2:CreateNetworkInterface"]
+      resources = ["*"]
+
+      condition {
+        test     = "StringEquals"
+        variable = "aws:RequestTag/eks:eks-cluster-name"
+        values   = ["$${aws:PrincipalTag/eks:eks-cluster-name}"]
+      }
+
+      condition {
+        test     = "StringEquals"
+        variable = "aws:RequestTag/eks:kubernetes-cni-node-name"
+        values   = ["*"]
+      }
+    }
+  }
+
+  dynamic "statement" {
+    for_each = var.enable_auto_mode_custom_tags ? [1] : []
+
+    content {
+      sid = "LoadBalancer"
+      actions = [
+        "elasticloadbalancing:CreateLoadBalancer",
+        "elasticloadbalancing:CreateTargetGroup",
+        "elasticloadbalancing:CreateListener",
+        "elasticloadbalancing:CreateRule",
+        "ec2:CreateSecurityGroup",
+      ]
+      resources = ["*"]
+
+      condition {
+        test     = "StringEquals"
+        variable = "aws:RequestTag/eks:eks-cluster-name"
+        values   = ["$${aws:PrincipalTag/eks:eks-cluster-name}"]
+      }
+    }
+  }
+
+  dynamic "statement" {
+    for_each = var.enable_auto_mode_custom_tags ? [1] : []
+
+    content {
+      sid       = "ShieldProtection"
+      actions   = ["shield:CreateProtection"]
+      resources = ["*"]
+
+      condition {
+        test     = "StringEquals"
+        variable = "aws:RequestTag/eks:eks-cluster-name"
+        values   = ["$${aws:PrincipalTag/eks:eks-cluster-name}"]
+      }
+    }
+  }
+
+  dynamic "statement" {
+    for_each = var.enable_auto_mode_custom_tags ? [1] : []
+
+    content {
+      sid       = "ShieldTagResource"
+      actions   = ["shield:TagResource"]
+      resources = ["arn:${local.partition}:shield::*:protection/*"]
+
+      condition {
+        test     = "StringEquals"
+        variable = "aws:RequestTag/eks:eks-cluster-name"
+        values   = ["$${aws:PrincipalTag/eks:eks-cluster-name}"]
+      }
+    }
+  }
+}
+
+resource "aws_iam_policy" "custom" {
+  count = local.create_iam_role && var.enable_auto_mode_custom_tags ? 1 : 0
+
+  name        = var.iam_role_use_name_prefix ? null : local.iam_role_name
+  name_prefix = var.iam_role_use_name_prefix ? "${local.iam_role_name}-" : null
+  path        = var.iam_role_path
+  description = var.iam_role_description
+
+  policy = data.aws_iam_policy_document.custom[0].json
+
+  tags = merge(var.tags, var.iam_role_tags)
+}
+
+resource "aws_iam_role_policy_attachment" "custom" {
+  count = local.create_iam_role && var.enable_auto_mode_custom_tags ? 1 : 0
+
+  policy_arn = aws_iam_policy.custom[0].arn
+  role       = aws_iam_role.this[0].name
 }
 
 ################################################################################
@@ -601,4 +842,63 @@ resource "aws_eks_identity_provider_config" "this" {
   }
 
   tags = merge(var.tags, try(each.value.tags, {}))
+}
+
+################################################################################
+# EKS Auto Node IAM Role
+################################################################################
+
+locals {
+  create_node_iam_role = local.create && var.create_node_iam_role && local.auto_mode_enabled
+  node_iam_role_name   = coalesce(var.node_iam_role_name, "${var.cluster_name}-eks-auto")
+}
+
+data "aws_iam_policy_document" "node_assume_role_policy" {
+  count = local.create_node_iam_role ? 1 : 0
+
+  statement {
+    sid = "EKSAutoNodeAssumeRole"
+    actions = [
+      "sts:AssumeRole",
+      "sts:TagSession",
+    ]
+
+    principals {
+      type        = "Service"
+      identifiers = ["ec2.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "eks_auto" {
+  count = local.create_node_iam_role ? 1 : 0
+
+  name        = var.node_iam_role_use_name_prefix ? null : local.node_iam_role_name
+  name_prefix = var.node_iam_role_use_name_prefix ? "${local.node_iam_role_name}-" : null
+  path        = var.node_iam_role_path
+  description = var.node_iam_role_description
+
+  assume_role_policy    = data.aws_iam_policy_document.node_assume_role_policy[0].json
+  permissions_boundary  = var.node_iam_role_permissions_boundary
+  force_detach_policies = true
+
+  tags = merge(var.tags, var.node_iam_role_tags)
+}
+
+# Policies attached ref https://docs.aws.amazon.com/eks/latest/userguide/service_IAM_role.html
+resource "aws_iam_role_policy_attachment" "eks_auto" {
+  for_each = { for k, v in {
+    AmazonEKSWorkerNodeMinimalPolicy   = "${local.iam_role_policy_prefix}/AmazonEKSWorkerNodeMinimalPolicy",
+    AmazonEC2ContainerRegistryPullOnly = "${local.iam_role_policy_prefix}/AmazonEC2ContainerRegistryPullOnly",
+  } : k => v if local.create_node_iam_role }
+
+  policy_arn = each.value
+  role       = aws_iam_role.eks_auto[0].name
+}
+
+resource "aws_iam_role_policy_attachment" "eks_auto_additional" {
+  for_each = { for k, v in var.node_iam_role_additional_policies : k => v if local.create_node_iam_role }
+
+  policy_arn = each.value
+  role       = aws_iam_role.eks_auto[0].name
 }

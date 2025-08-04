@@ -355,6 +355,8 @@ locals {
     CUSTOM                     = "NONE"
     BOTTLEROCKET_ARM_64        = "/aws/service/bottlerocket/aws-k8s-${local.ssm_cluster_version}/arm64/latest/image_version"
     BOTTLEROCKET_x86_64        = "/aws/service/bottlerocket/aws-k8s-${local.ssm_cluster_version}/x86_64/latest/image_version"
+    BOTTLEROCKET_ARM_64_FIPS   = "/aws/service/bottlerocket/aws-k8s-${local.ssm_cluster_version}-fips/arm64/latest/image_version"
+    BOTTLEROCKET_x86_64_FIPS   = "/aws/service/bottlerocket/aws-k8s-${local.ssm_cluster_version}-fips/x86_64/latest/image_version"
     BOTTLEROCKET_ARM_64_NVIDIA = "/aws/service/bottlerocket/aws-k8s-${local.ssm_cluster_version}-nvidia/arm64/latest/image_version"
     BOTTLEROCKET_x86_64_NVIDIA = "/aws/service/bottlerocket/aws-k8s-${local.ssm_cluster_version}-nvidia/x86_64/latest/image_version"
     WINDOWS_CORE_2019_x86_64   = "/aws/service/ami-windows-latest/Windows_Server-2019-English-Full-EKS_Optimized-${local.ssm_cluster_version}"
@@ -365,6 +367,7 @@ locals {
     AL2023_ARM_64_STANDARD     = "/aws/service/eks/optimized-ami/${local.ssm_cluster_version}/amazon-linux-2023/arm64/standard/recommended/release_version"
     AL2023_x86_64_NEURON       = "/aws/service/eks/optimized-ami/${local.ssm_cluster_version}/amazon-linux-2023/x86_64/neuron/recommended/release_version"
     AL2023_x86_64_NVIDIA       = "/aws/service/eks/optimized-ami/${local.ssm_cluster_version}/amazon-linux-2023/x86_64/nvidia/recommended/release_version"
+    AL2023_ARM_64_NVIDIA       = "/aws/service/eks/optimized-ami/${local.ssm_cluster_version}/amazon-linux-2023/arm64/nvidia/recommended/release_version"
   }
 
   # The Windows SSM params currently do not have a release version, so we have to get the full output JSON blob and parse out the release version
@@ -453,6 +456,14 @@ resource "aws_eks_node_group" "this" {
     content {
       max_unavailable_percentage = try(update_config.value.max_unavailable_percentage, null)
       max_unavailable            = try(update_config.value.max_unavailable, null)
+    }
+  }
+
+  dynamic "node_repair_config" {
+    for_each = var.node_repair_config != null ? [var.node_repair_config] : []
+
+    content {
+      enabled = node_repair_config.value.enabled
     }
   }
 
@@ -687,9 +698,9 @@ resource "aws_autoscaling_schedule" "this" {
   scheduled_action_name  = each.key
   autoscaling_group_name = aws_eks_node_group.this[0].resources[0].autoscaling_groups[0].name
 
-  min_size         = try(each.value.min_size, null)
-  max_size         = try(each.value.max_size, null)
-  desired_capacity = try(each.value.desired_size, null)
+  min_size         = try(each.value.min_size, -1)
+  max_size         = try(each.value.max_size, -1)
+  desired_capacity = try(each.value.desired_size, -1)
   start_time       = try(each.value.start_time, null)
   end_time         = try(each.value.end_time, null)
   time_zone        = try(each.value.time_zone, null)
