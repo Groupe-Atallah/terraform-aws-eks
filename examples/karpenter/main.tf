@@ -2,11 +2,6 @@ provider "aws" {
   region = local.region
 }
 
-provider "aws" {
-  region = "us-east-1"
-  alias  = "virginia"
-}
-
 provider "helm" {
   kubernetes = {
     host                   = module.eks.cluster_endpoint
@@ -30,7 +25,7 @@ data "aws_availability_zones" "available" {
 }
 
 data "aws_ecrpublic_authorization_token" "token" {
-  provider = aws.virginia
+  region = "us-east-1"
 }
 
 locals {
@@ -61,6 +56,11 @@ module "eks" {
   # allow deploying resources (Karpenter) into the cluster
   enable_cluster_creator_admin_permissions = true
   endpoint_public_access                   = true
+
+  # EKS Provisioned Control Plane configuration
+  control_plane_scaling_config = {
+    tier = "standard"
+  }
 
   addons = {
     coredns = {}
@@ -155,6 +155,7 @@ resource "helm_release" "karpenter" {
       clusterName: ${module.eks.cluster_name}
       clusterEndpoint: ${module.eks.cluster_endpoint}
       interruptionQueue: ${module.karpenter.queue_name}
+      enableZonalShift: true
     webhook:
       enabled: false
     EOT

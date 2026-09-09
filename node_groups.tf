@@ -117,12 +117,21 @@ locals {
       type        = "ingress"
       self        = true
     }
-    # metrics-server
+    # metrics-server, legacy port - TODO: remove this on the next breaking change at v22
     ingress_cluster_4443_webhook = {
       description                   = "Cluster API to node 4443/tcp webhook"
       protocol                      = "tcp"
       from_port                     = 4443
       to_port                       = 4443
+      type                          = "ingress"
+      source_cluster_security_group = true
+    }
+    # metrics-server, current EKS default port
+    ingress_cluster_10251_webhook = {
+      description                   = "Cluster API to node 10251/tcp webhook"
+      protocol                      = "tcp"
+      from_port                     = 10251
+      to_port                       = 10251
       type                          = "ingress"
       source_cluster_security_group = true
     }
@@ -350,6 +359,7 @@ module "eks_managed_node_group" {
   create_placement_group             = each.value.create_placement_group
   placement                          = each.value.placement
   network_interfaces                 = each.value.network_interfaces
+  network_performance_options        = each.value.network_performance_options
   maintenance_options                = each.value.maintenance_options
   private_dns_name_options           = each.value.private_dns_name_options
 
@@ -496,6 +506,7 @@ module "self_managed_node_group" {
   enable_efa_only                    = each.value.enable_efa_only
   efa_indices                        = each.value.efa_indices
   network_interfaces                 = each.value.network_interfaces
+  network_performance_options        = each.value.network_performance_options
   placement                          = each.value.placement
   maintenance_options                = each.value.maintenance_options
   private_dns_name_options           = each.value.private_dns_name_options

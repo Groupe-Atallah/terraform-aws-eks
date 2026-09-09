@@ -26,7 +26,7 @@ locals {
   create_outposts_local_cluster = var.outpost_config != null
   enable_encryption_config      = var.encryption_config != null && !local.create_outposts_local_cluster
 
-  auto_mode_enabled = try(var.compute_config.enabled, false)
+  create_auto_mode_iam_resources = try(var.compute_config.enabled, false) == true || var.create_auto_mode_iam_resources
 }
 
 ################################################################################
@@ -57,6 +57,14 @@ resource "aws_eks_cluster" "this" {
     bootstrap_cluster_creator_admin_permissions = false
   }
 
+  dynamic "control_plane_scaling_config" {
+    for_each = var.control_plane_scaling_config != null ? [var.control_plane_scaling_config] : []
+
+    content {
+      tier = control_plane_scaling_config.value.tier
+    }
+  }
+
   dynamic "compute_config" {
     for_each = var.compute_config != null ? [var.compute_config] : []
 
@@ -68,11 +76,12 @@ resource "aws_eks_cluster" "this" {
   }
 
   vpc_config {
-    security_group_ids      = compact(distinct(concat(var.additional_security_group_ids, [local.security_group_id])))
-    subnet_ids              = coalescelist(var.control_plane_subnet_ids, var.subnet_ids)
-    endpoint_private_access = var.endpoint_private_access
-    endpoint_public_access  = var.endpoint_public_access
-    public_access_cidrs     = var.endpoint_public_access_cidrs
+    control_plane_egress_mode = var.control_plane_egress_mode
+    security_group_ids        = compact(distinct(concat(var.additional_security_group_ids, [local.security_group_id])))
+    subnet_ids                = coalescelist(var.control_plane_subnet_ids, var.subnet_ids)
+    endpoint_private_access   = var.endpoint_private_access
+    endpoint_public_access    = var.endpoint_public_access
+    public_access_cidrs       = var.endpoint_public_access_cidrs
   }
 
   dynamic "kubernetes_network_config" {
@@ -81,16 +90,45 @@ resource "aws_eks_cluster" "this" {
 
     content {
       dynamic "elastic_load_balancing" {
-        for_each = local.auto_mode_enabled ? [1] : []
+        for_each = var.compute_config != null ? [var.compute_config] : []
 
         content {
-          enabled = local.auto_mode_enabled
+          enabled = elastic_load_balancing.value.enabled
         }
       }
 
       ip_family         = var.ip_family
       service_ipv4_cidr = var.service_ipv4_cidr
       service_ipv6_cidr = var.service_ipv6_cidr
+    }
+  }
+
+  dynamic "kube_scheduler_config" {
+    for_each = var.kube_scheduler_config != null ? [var.kube_scheduler_config] : []
+
+    content {
+      dynamic "node_resources_fit" {
+        for_each = kube_scheduler_config.value.node_resources_fit != null ? [kube_scheduler_config.value.node_resources_fit] : []
+
+        content {
+          dynamic "scoring_strategy" {
+            for_each = node_resources_fit.value.scoring_strategy != null ? [node_resources_fit.value.scoring_strategy] : []
+
+            content {
+              type = scoring_strategy.value.type
+
+              dynamic "resource" {
+                for_each = scoring_strategy.value.resources != null ? scoring_strategy.value.resources : []
+
+                content {
+                  name   = resource.value.name
+                  weight = resource.value.weight
+                }
+              }
+            }
+          }
+        }
+      }
     }
   }
 
@@ -148,11 +186,11 @@ resource "aws_eks_cluster" "this" {
   }
 
   dynamic "storage_config" {
-    for_each = local.auto_mode_enabled ? [1] : []
+    for_each = var.compute_config != null ? [var.compute_config] : []
 
     content {
       block_storage {
-        enabled = local.auto_mode_enabled
+        enabled = storage_config.value.enabled
       }
     }
   }
@@ -174,7 +212,6 @@ resource "aws_eks_cluster" "this" {
   }
 
   tags = merge(
-    { terraform-aws-modules = "eks" },
     var.tags,
     var.cluster_tags,
   )
@@ -340,6 +377,7 @@ module "kms" {
   key_usage               = "ENCRYPT_DECRYPT"
   deletion_window_in_days = var.kms_key_deletion_window_in_days
   enable_key_rotation     = var.enable_kms_key_rotation
+  rotation_period_in_days = var.kms_key_rotation_period_in_days
 
   # Policy
   enable_default_policy     = var.kms_key_enable_default_policy
@@ -358,7 +396,6 @@ module "kms" {
   }
 
   tags = merge(
-    { terraform-aws-modules = "eks" },
     var.tags,
   )
 }
@@ -476,7 +513,7 @@ locals {
   # Standard EKS cluster
   eks_standard_iam_role_policies = { for k, v in {
     AmazonEKSClusterPolicy = "${local.iam_role_policy_prefix}/AmazonEKSClusterPolicy",
-  } : k => v if !local.create_outposts_local_cluster && !local.auto_mode_enabled }
+  } : k => v if !local.create_outposts_local_cluster && !local.create_auto_mode_iam_resources }
 
   # EKS cluster with EKS auto mode enabled
   eks_auto_mode_iam_role_policies = { for k, v in {
@@ -485,12 +522,12 @@ locals {
     AmazonEKSBlockStoragePolicy  = "${local.iam_role_policy_prefix}/AmazonEKSBlockStoragePolicy"
     AmazonEKSLoadBalancingPolicy = "${local.iam_role_policy_prefix}/AmazonEKSLoadBalancingPolicy"
     AmazonEKSNetworkingPolicy    = "${local.iam_role_policy_prefix}/AmazonEKSNetworkingPolicy"
-  } : k => v if !local.create_outposts_local_cluster && local.auto_mode_enabled }
+  } : k => v if !local.create_outposts_local_cluster && local.create_auto_mode_iam_resources }
 
   # EKS local cluster on Outposts
   eks_outpost_iam_role_policies = { for k, v in {
     AmazonEKSClusterPolicy = "${local.iam_role_policy_prefix}/AmazonEKSLocalOutpostClusterPolicy"
-  } : k => v if local.create_outposts_local_cluster && !local.auto_mode_enabled }
+  } : k => v if local.create_outposts_local_cluster && !local.create_auto_mode_iam_resources }
 }
 
 data "aws_iam_policy_document" "assume_role_policy" {
@@ -591,7 +628,7 @@ resource "aws_iam_policy" "cluster_encryption" {
 }
 
 data "aws_iam_policy_document" "custom" {
-  count = local.create_iam_role && local.auto_mode_enabled && var.enable_auto_mode_custom_tags ? 1 : 0
+  count = local.create_iam_role && local.create_auto_mode_iam_resources && var.enable_auto_mode_custom_tags ? 1 : 0
 
   dynamic "statement" {
     for_each = var.enable_auto_mode_custom_tags ? [1] : []
@@ -725,7 +762,7 @@ data "aws_iam_policy_document" "custom" {
 }
 
 resource "aws_iam_policy" "custom" {
-  count = local.create_iam_role && local.auto_mode_enabled && var.enable_auto_mode_custom_tags ? 1 : 0
+  count = local.create_iam_role && local.create_auto_mode_iam_resources && var.enable_auto_mode_custom_tags ? 1 : 0
 
   name        = var.iam_role_use_name_prefix ? null : local.iam_role_name
   name_prefix = var.iam_role_use_name_prefix ? "${local.iam_role_name}-" : null
@@ -738,7 +775,7 @@ resource "aws_iam_policy" "custom" {
 }
 
 resource "aws_iam_role_policy_attachment" "custom" {
-  count = local.create_iam_role && local.auto_mode_enabled && var.enable_auto_mode_custom_tags ? 1 : 0
+  count = local.create_iam_role && local.create_auto_mode_iam_resources && var.enable_auto_mode_custom_tags ? 1 : 0
 
   policy_arn = aws_iam_policy.custom[0].arn
   role       = aws_iam_role.this[0].name
@@ -770,6 +807,14 @@ resource "aws_eks_addon" "this" {
   addon_version        = coalesce(each.value.addon_version, data.aws_eks_addon_version.this[each.key].version)
   configuration_values = each.value.configuration_values
 
+  dynamic "namespace_config" {
+    for_each = each.value.namespace_config != null ? [each.value.namespace_config] : []
+
+    content {
+      namespace = namespace_config.value.namespace
+    }
+  }
+
   dynamic "pod_identity_association" {
     for_each = each.value.pod_identity_association != null ? each.value.pod_identity_association : []
 
@@ -785,9 +830,9 @@ resource "aws_eks_addon" "this" {
   service_account_role_arn    = each.value.service_account_role_arn
 
   timeouts {
-    create = try(coalesce(each.value.timeouts.create, var.addons_timeouts.create), null)
-    update = try(coalesce(each.value.timeouts.update, var.addons_timeouts.update), null)
-    delete = try(coalesce(each.value.timeouts.delete, var.addons_timeouts.delete), null)
+    create = each.value.timeouts.create != null ? each.value.timeouts.create : var.addons_timeouts.create
+    update = each.value.timeouts.update != null ? each.value.timeouts.update : var.addons_timeouts.update
+    delete = each.value.timeouts.delete != null ? each.value.timeouts.delete : var.addons_timeouts.delete
   }
 
   tags = merge(
@@ -815,6 +860,14 @@ resource "aws_eks_addon" "before_compute" {
   addon_version        = coalesce(each.value.addon_version, data.aws_eks_addon_version.this[each.key].version)
   configuration_values = each.value.configuration_values
 
+  dynamic "namespace_config" {
+    for_each = each.value.namespace_config != null ? [each.value.namespace_config] : []
+
+    content {
+      namespace = namespace_config.value.namespace
+    }
+  }
+
   dynamic "pod_identity_association" {
     for_each = each.value.pod_identity_association != null ? each.value.pod_identity_association : []
 
@@ -830,9 +883,9 @@ resource "aws_eks_addon" "before_compute" {
   service_account_role_arn    = each.value.service_account_role_arn
 
   timeouts {
-    create = try(coalesce(each.value.timeouts.create, var.addons_timeouts.create), null)
-    update = try(coalesce(each.value.timeouts.update, var.addons_timeouts.update), null)
-    delete = try(coalesce(each.value.timeouts.delete, var.addons_timeouts.delete), null)
+    create = each.value.timeouts.create != null ? each.value.timeouts.create : var.addons_timeouts.create
+    update = each.value.timeouts.update != null ? each.value.timeouts.update : var.addons_timeouts.update
+    delete = each.value.timeouts.delete != null ? each.value.timeouts.delete : var.addons_timeouts.delete
   }
 
   tags = merge(
@@ -875,7 +928,7 @@ resource "aws_eks_identity_provider_config" "this" {
 ################################################################################
 
 locals {
-  create_node_iam_role = local.create && var.create_node_iam_role && local.auto_mode_enabled
+  create_node_iam_role = local.create && var.create_node_iam_role && local.create_auto_mode_iam_resources
   node_iam_role_name   = coalesce(var.node_iam_role_name, "${var.name}-eks-auto")
 }
 

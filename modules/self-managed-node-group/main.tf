@@ -29,10 +29,12 @@ locals {
     BOTTLEROCKET_x86_64_FIPS   = "/aws/service/bottlerocket/aws-k8s-${local.ssm_kubernetes_version}-fips/x86_64/latest/image_id"
     BOTTLEROCKET_ARM_64_NVIDIA = "/aws/service/bottlerocket/aws-k8s-${local.ssm_kubernetes_version}-nvidia/arm64/latest/image_id"
     BOTTLEROCKET_x86_64_NVIDIA = "/aws/service/bottlerocket/aws-k8s-${local.ssm_kubernetes_version}-nvidia/x86_64/latest/image_id"
-    WINDOWS_CORE_2019_x86_64   = "/aws/service/ami-windows-latest/Windows_Server-2019-English-Full-EKS_Optimized-${local.ssm_kubernetes_version}/image_id"
-    WINDOWS_FULL_2019_x86_64   = "/aws/service/ami-windows-latest/Windows_Server-2019-English-Core-EKS_Optimized-${local.ssm_kubernetes_version}/image_id"
-    WINDOWS_CORE_2022_x86_64   = "/aws/service/ami-windows-latest/Windows_Server-2022-English-Full-EKS_Optimized-${local.ssm_kubernetes_version}/image_id"
-    WINDOWS_FULL_2022_x86_64   = "/aws/service/ami-windows-latest/Windows_Server-2022-English-Core-EKS_Optimized-${local.ssm_kubernetes_version}/image_id"
+    WINDOWS_CORE_2019_x86_64   = "/aws/service/ami-windows-latest/Windows_Server-2019-English-Core-EKS_Optimized-${local.ssm_kubernetes_version}/image_id"
+    WINDOWS_FULL_2019_x86_64   = "/aws/service/ami-windows-latest/Windows_Server-2019-English-Full-EKS_Optimized-${local.ssm_kubernetes_version}/image_id"
+    WINDOWS_CORE_2022_x86_64   = "/aws/service/ami-windows-latest/Windows_Server-2022-English-Core-EKS_Optimized-${local.ssm_kubernetes_version}/image_id"
+    WINDOWS_FULL_2022_x86_64   = "/aws/service/ami-windows-latest/Windows_Server-2022-English-Full-EKS_Optimized-${local.ssm_kubernetes_version}/image_id"
+    WINDOWS_CORE_2025_x86_64   = "/aws/service/ami-windows-latest/Windows_Server-2025-English-Core-EKS_Optimized-${local.ssm_kubernetes_version}/image_id"
+    WINDOWS_FULL_2025_x86_64   = "/aws/service/ami-windows-latest/Windows_Server-2025-English-Full-EKS_Optimized-${local.ssm_kubernetes_version}/image_id"
     AL2023_x86_64_STANDARD     = "/aws/service/eks/optimized-ami/${local.ssm_kubernetes_version}/amazon-linux-2023/x86_64/standard/recommended/image_id"
     AL2023_ARM_64_STANDARD     = "/aws/service/eks/optimized-ami/${local.ssm_kubernetes_version}/amazon-linux-2023/arm64/standard/recommended/image_id"
     AL2023_x86_64_NEURON       = "/aws/service/eks/optimized-ami/${local.ssm_kubernetes_version}/amazon-linux-2023/x86_64/neuron/recommended/image_id"
@@ -42,7 +44,8 @@ locals {
 }
 
 data "aws_ssm_parameter" "ami" {
-  count = var.create ? 1 : 0
+  # only pull the ami if we're creating the resource AND we're not already using a custom ami
+  count = var.create && var.ami_id == "" ? 1 : 0
 
   region = var.region
 
@@ -82,7 +85,7 @@ module "user_data" {
 ################################################################################
 
 data "aws_ec2_instance_type" "this" {
-  count = var.create && var.enable_efa_support ? 1 : 0
+  count = local.enable_efa_support ? 1 : 0
 
   region = var.region
 
@@ -103,6 +106,24 @@ locals {
       device_index                = i == 0 ? 0 : 1
       network_card_index          = i
       interface_type              = var.enable_efa_only ? contains(concat([0], var.efa_indices), i) ? "efa" : "efa-only" : "efa"
+
+      # Null out due to error: The true and false result expressions must have consistent types. The 'true' value is tuple, but the 'false' value is list of objects.
+      associate_carrier_ip_address      = null
+      connection_tracking_specification = null
+      description                       = "EFA${var.enable_efa_only ? "-only" : ""} Network Interface ${i}"
+      ena_srd_specification             = null
+      ipv4_address_count                = null
+      ipv4_addresses                    = null
+      ipv4_prefix_count                 = null
+      ipv4_prefixes                     = null
+      ipv6_address_count                = null
+      ipv6_addresses                    = null
+      ipv6_prefix_count                 = null
+      ipv6_prefixes                     = null
+      network_interface_id              = null
+      primary_ipv6                      = null
+      private_ip_address                = null
+      security_groups                   = []
     }
   ]
 
@@ -170,9 +191,10 @@ resource "aws_launch_template" "this" {
     for_each = var.cpu_options != null ? [var.cpu_options] : []
 
     content {
-      amd_sev_snp      = cpu_options.value.amd_sev_snp
-      core_count       = cpu_options.value.core_count
-      threads_per_core = cpu_options.value.threads_per_core
+      amd_sev_snp           = cpu_options.value.amd_sev_snp
+      core_count            = cpu_options.value.core_count
+      nested_virtualization = cpu_options.value.nested_virtualization
+      threads_per_core      = cpu_options.value.threads_per_core
     }
   }
 
@@ -201,7 +223,7 @@ resource "aws_launch_template" "this" {
     arn = var.create_iam_instance_profile ? aws_iam_instance_profile.this[0].arn : var.iam_instance_profile_arn
   }
 
-  image_id                             = coalesce(var.ami_id, nonsensitive(data.aws_ssm_parameter.ami[0].value))
+  image_id                             = var.ami_id == "" ? nonsensitive(data.aws_ssm_parameter.ami[0].value) : var.ami_id
   instance_initiated_shutdown_behavior = var.instance_initiated_shutdown_behavior
 
   dynamic "instance_market_options" {
@@ -342,7 +364,7 @@ resource "aws_launch_template" "this" {
   }
 
   dynamic "metadata_options" {
-    for_each = var.metadata_options != null ? [var.metadata_options] : []
+    for_each = [var.metadata_options]
 
     content {
       http_endpoint               = metadata_options.value.http_endpoint
@@ -365,7 +387,7 @@ resource "aws_launch_template" "this" {
   name_prefix = var.launch_template_use_name_prefix ? "${local.launch_template_name}-" : null
 
   dynamic "network_interfaces" {
-    for_each = length(var.network_interfaces) > 0 ? var.network_interfaces : []
+    for_each = length(local.network_interfaces) > 0 ? local.network_interfaces : []
 
     content {
       associate_carrier_ip_address = network_interfaces.value.associate_carrier_ip_address
@@ -415,10 +437,18 @@ resource "aws_launch_template" "this" {
       primary_ipv6         = network_interfaces.value.primary_ipv6
       private_ip_address   = network_interfaces.value.private_ip_address
       # Ref: https://github.com/hashicorp/terraform-provider-aws/issues/4570
-      security_groups = compact(concat(network_interfaces.value.security_groups, var.vpc_security_group_ids))
+      security_groups = compact(concat(network_interfaces.value.security_groups, local.security_group_ids))
       # Set on EKS managed node group, will fail if set here
       # https://docs.aws.amazon.com/eks/latest/userguide/launch-templates.html#launch-template-basics
       # subnet_id       = try(network_interfaces.value.subnet_id, null)
+    }
+  }
+
+  dynamic "network_performance_options" {
+    for_each = var.network_performance_options != null ? [var.network_performance_options] : []
+
+    content {
+      bandwidth_weighting = network_performance_options.value.bandwidth_weighting
     }
   }
 
@@ -976,9 +1006,16 @@ locals {
     {
       all_self_efa = {
         description = "Node to node EFA"
-        protocol    = "-1"
-        from_port   = 0
+        ip_protocol = "-1"
         self        = true
+
+        # Null out due to variable type and not using `try()` in resource
+        cidr_ipv4      = null
+        cidr_ipv6      = null
+        from_port      = null
+        name           = null
+        prefix_list_id = null
+        tags           = {}
       }
     } : k => v if var.enable_efa_support
     },
@@ -988,9 +1025,16 @@ locals {
     {
       all_self_efa = {
         description = "Node to node EFA"
-        protocol    = "-1"
-        to_port     = 0
+        ip_protocol = "-1"
         self        = true
+
+        # Null out due to variable type and not using `try()` in resource
+        cidr_ipv4      = null
+        cidr_ipv6      = null
+        to_port        = null
+        name           = null
+        prefix_list_id = null
+        tags           = {}
       }
     } : k => v if var.enable_efa_support
     },
