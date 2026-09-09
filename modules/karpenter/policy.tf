@@ -183,6 +183,7 @@ data "aws_iam_policy_document" "controller" {
       "ec2:DescribeAvailabilityZones",
       "ec2:DescribeImages",
       "ec2:DescribeInstances",
+      "ec2:DescribeInstanceStatus",
       "ec2:DescribeInstanceTypeOfferings",
       "ec2:DescribeInstanceTypes",
       "ec2:DescribeLaunchTemplates",
@@ -346,6 +347,13 @@ data "aws_iam_policy_document" "controller" {
     sid       = "AllowInstanceProfileReadActions"
     resources = ["arn:${local.partition}:iam::${local.account_id}:instance-profile/*"]
     actions   = ["iam:GetInstanceProfile"]
+  }
+
+  # Required by Karpenter >= 1.7 (instance profiles created under /karpenter/{region}/{cluster}/{nodeclass-uid}/ path)
+  statement {
+    sid       = "AllowInstanceProfileListActions"
+    resources = ["*"]
+    actions   = ["iam:ListInstanceProfiles"]
   }
 
   statement {
